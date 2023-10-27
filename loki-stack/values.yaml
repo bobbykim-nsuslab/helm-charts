@@ -1,0 +1,135 @@
+test_pod:
+  enabled: false
+  image: bats/bats:1.8.2
+  pullPolicy: IfNotPresent
+
+loki:
+  enabled: true
+  isDefault: true
+  url: http://{{(include "loki.serviceName" .)}}:{{ .Values.loki.service.port }}
+  readinessProbe:
+    httpGet:
+      path: /ready
+      port: http-metrics
+    initialDelaySeconds: 45
+  livenessProbe:
+    httpGet:
+      path: /ready
+      port: http-metrics
+    initialDelaySeconds: 45
+  datasource:
+    jsonData: "{}"
+    uid: ""
+
+
+promtail:
+  enabled: true
+  config:
+    logLevel: info
+    serverPort: 3101
+    clients:
+      - url: http://{{ .Release.Name }}:3100/loki/api/v1/push
+
+fluent-bit:
+  enabled: false
+
+grafana:
+  enabled: true
+  sidecar:
+    datasources:
+      label: ""
+      labelValue: ""
+      enabled: true
+      maxLines: 1000
+  image:
+    tag: latest
+  ingress:
+    enabled: false
+    # For Kubernetes >= 1.18 you should specify the ingress-controller via the field ingressClassName
+    # See https://kubernetes.io/blog/2020/04/02/improvements-to-the-ingress-api-in-kubernetes-1.18/#specifying-the-class-of-an-ingress
+    ingressClassName: alb
+    annotations:
+      alb.ingress.kubernetes.io/scheme:  internet-facing            # internal | internet-facing
+      alb.ingress.kubernetes.io/group.name: gp-global-develop-alb
+      alb.ingress.kubernetes.io/group.order: 200
+      alb.ingress.kubernetes.io/healthcheck-path: /api/health
+      alb.ingress.kubernetes.io/healthcheck-port: "80"
+      alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:ap-east-1:893452408139:certificate/2ae42289-2511-40fe-af8b-7b4d6bf88a9c
+      alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80, "HTTPS": 443}]'      # internal:[{"HTTP" : 80}], external:[{"HTTPS": 443, "HTTP": 80}]
+      alb.ingress.kubernetes.io/target-group-attributes: load_balancing.algorithm.type=least_outstanding_requests
+      alb.ingress.kubernetes.io/target-type: ip
+      # kubernetes.io/ingress.class: nginx
+      # kubernetes.io/tls-acme: "true"
+    labels: {}
+    hosts:
+      - host: "grafana-gp-test.tpmapi.com"
+        paths:
+          - path: /
+            pathType: Prefix
+    # path: /
+
+prometheus:
+  enabled: false
+  isDefault: false
+  url: http://{{ include "prometheus.fullname" .}}:{{ .Values.prometheus.server.service.servicePort }}{{ .Values.prometheus.server.prefixURL }}
+  datasource:
+    jsonData: "{}"
+
+filebeat:
+  enabled: false
+  filebeatConfig:
+    filebeat.yml: |
+      # logging.level: debug
+      filebeat.inputs:
+      - type: container
+        paths:
+          - /var/log/containers/*.log
+        processors:
+        - add_kubernetes_metadata:
+            host: ${NODE_NAME}
+            matchers:
+            - logs_path:
+                logs_path: "/var/log/containers/"
+      output.logstash:
+        hosts: ["logstash-loki:5044"]
+
+logstash:
+  enabled: false
+  image: grafana/logstash-output-loki
+  imageTag: 1.0.1
+  filters:
+    main: |-
+      filter {
+        if [kubernetes] {
+          mutate {
+            add_field => {
+              "container_name" => "%{[kubernetes][container][name]}"
+              "namespace" => "%{[kubernetes][namespace]}"
+              "pod" => "%{[kubernetes][pod][name]}"
+            }
+            replace => { "host" => "%{[kubernetes][node][name]}"}
+          }
+        }
+        mutate {
+          remove_field => ["tags"]
+        }
+      }
+  outputs:
+    main: |-
+      output {
+        loki {
+          url => "http://loki:3100/loki/api/v1/push"
+          #username => "test"
+          #password => "test"
+        }
+        # stdout { codec => rubydebug }
+      }
+
+# proxy is currently only used by loki test pod
+# Note: If http_proxy/https_proxy are set, then no_proxy should include the
+# loki service name, so that tests are able to communicate with the loki
+# service.
+proxy:
+  http_proxy: ""
+  https_proxy: ""
+  no_proxy: ""

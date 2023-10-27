@@ -1,0 +1,101 @@
+loki:
+  enabled: true
+  env:
+    - name: AWS_ACCESS_KEY_ID
+      valueFrom:
+        secretKeyRef:
+          name: iam-loki-s3
+          key: AWS_ACCESS_KEY_ID
+    - name: AWS_SECRET_ACCESS_KEY
+      valueFrom:
+        secretKeyRef:
+          name: iam-loki-s3
+          key: AWS_SECRET_ACCESS_KEY
+  config:
+    schema_config:
+      configs:
+        - from: 2021-05-12
+          store: boltdb-shipper
+          object_store: s3
+          schema: v11
+          index:
+            prefix: loki_index_
+            period: 24h
+    storage_config:
+      aws:
+        s3: s3://ap-east-1/tpm.stage.hk.logs
+        s3forcepathstyle: true
+        bucketnames: tpm.stage.hk.logs
+        region: ap-east-1
+        insecure: false
+        sse_encryption: false
+      boltdb_shipper:
+        shared_store: s3
+        cache_ttl: 24h
+
+
+promtail:
+  enabled: true
+  config:
+    logLevel: info
+    serverPort: 3101
+    clients:
+      - url: http://{{ .Release.Name }}:3100/loki/api/v1/push
+    snippets:
+      pipelineStages:
+        - cri: {}
+      extraScrapeConfigs: |
+        - job_name: accesslog
+          static_configs:
+            - targets:
+              - localhost
+              labels:
+                job: accesslog
+                __path__: /var/log/tpm/accesslog/*.log
+  extraVolumes:
+    - name: accesslog
+      hostPath:
+        path: /var/log/tpm/accesslog
+  extraVolumeMounts:
+    - name: accesslog
+      mountPath: /var/log/tpm/accesslog
+      readOnly: true
+
+grafana:
+  enabled: true
+  sidecar:
+    datasources:
+      label: ""
+      labelValue: ""
+      enabled: true
+      maxLines: 1000
+  image:
+    tag: latest
+  ingress:
+    enabled: true
+    # For Kubernetes >= 1.18 you should specify the ingress-controller via the field ingressClassName
+    # See https://kubernetes.io/blog/2020/04/02/improvements-to-the-ingress-api-in-kubernetes-1.18/#specifying-the-class-of-an-ingress
+    ingressClassName: alb
+    annotations:
+      alb.ingress.kubernetes.io/scheme:  internet-facing            # internal | internet-facing
+      alb.ingress.kubernetes.io/group.name: gp-global-stage-alb-external
+      alb.ingress.kubernetes.io/group.order: "200"
+      alb.ingress.kubernetes.io/healthcheck-path: /api/health
+      alb.ingress.kubernetes.io/healthcheck-port: "80"
+      alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:ap-east-1:893452408139:certificate/2ae42289-2511-40fe-af8b-7b4d6bf88a9c
+      alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80, "HTTPS": 443}]'      # internal:[{"HTTP" : 80}], external:[{"HTTPS": 443, "HTTP": 80}]
+      alb.ingress.kubernetes.io/target-group-attributes: load_balancing.algorithm.type=least_outstanding_requests
+      alb.ingress.kubernetes.io/target-type: ip
+      # kubernetes.io/ingress.class: nginx
+      # kubernetes.io/tls-acme: "true"
+    path: /
+    pathType: Prefix
+    hosts:
+      - grafana-gp-stage.tpmapi.com
+
+prometheus:
+  enabled: false
+  isDefault: false
+  url: http://{{ include "prometheus.fullname" .}}:{{ .Values.prometheus.server.service.servicePort }}{{ .Values.prometheus.server.prefixURL }}
+  datasource:
+    jsonData: "{}"
